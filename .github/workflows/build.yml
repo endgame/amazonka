@@ -26,4 +26,4 @@ jobs:
           name: amazonka
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
-      - run: nix-build -A ci.library.amazonka-s3 -A ci.library.amazonka-ec2 --argstr ghcVersion ${{ matrix.ghc }} --show-trace
+      - run: nix-build -A ci.library.amazonka-ec2 --argstr ghcVersion ${{ matrix.ghc }} --show-trace
