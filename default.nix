@@ -30,9 +30,6 @@ let
 in projectPackages // {
   ci = builtins.mapAttrs (type: f: f type) {
     "library" = collectComponents;
-    "tests" = collectComponents;
-    "benchmarks" = collectComponents;
-    "exes" = collectComponents;
     "checks" = collectChecks;
   };
 
