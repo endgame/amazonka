@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: ci-testing
+    branches: ci-more-testing
   pull_request:
     branches: bh/ci
 
@@ -23,6 +23,7 @@ jobs:
       # Run synchronously so maximise-build-space can claim as much as possibl
       - run: sudo rm -rf /opt
       - run: df -h
+      - run: sudo mkdir /nix
       - uses: easimon/maximize-build-space@v4
         with:
           root-reserve-mb: '4096'
