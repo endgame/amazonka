@@ -2,7 +2,7 @@ name: build
 
 on:
   push:
-    branches: bh/ci
+    branches: ci-testing
   pull_request:
     branches: bh/ci
 
@@ -12,18 +12,38 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, ghc: ghc884 }
+#          - { os: ubuntu-latest, ghc: ghc884 }
           - { os: ubuntu-latest, ghc: ghc8104 }
-          - { os: macos-latest, ghc: ghc8104 }
+#          - { os: macos-latest, ghc: ghc8104 }
 
     runs-on: ${{ matrix.os }}
 
     steps:
+      - run: df -h
+      # Run synchronously so maximise-build-space can claim as much as possibl
+      - run: sudo rm -rf /opt
+      - run: df -h
+      - uses: easimon/maximize-build-space@v4
+        with:
+          root-reserve-mb: '4096'
+          swap-size-mb: '8192' # Hedging against OOM for amazonka-ec2 etc
+          build-mount-path: '/nix'
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          #remove-haskell: 'true' # We removed all of /opt already
+      - run: df -h
       - uses: actions/checkout@v2
+      - run: df -h
       - uses: cachix/install-nix-action@v12
+        with:
+          extra_nix_config: |
+            trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+            substituters = https://hydra.iohk.io https://cache.nixos.org/
+      - run: df -h
       - uses: cachix/cachix-action@v8
         with:
-          name: amazonka
+          name: endgame-amazonka-test
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
+      - run: df -h
       - run: nix-build -A ci.library --argstr ghcVersion ${{ matrix.ghc }}
+      - run: df -h
