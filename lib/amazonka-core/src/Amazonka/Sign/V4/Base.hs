@@ -16,7 +16,9 @@ import Amazonka.Request
 import Amazonka.Types
 import qualified Data.Map.Strict as Map
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BS8
+import qualified Data.ByteString.Lazy as BSL
 import qualified Data.CaseInsensitive as CI
 import qualified Data.Foldable as Foldable
 import qualified Network.HTTP.Client as Client
@@ -267,9 +269,9 @@ canonicalQuery = Tag . toBS
 -- all internal whitespace, replacing with a single space char,
 -- unless quoted with \"...\"
 canonicalHeaders :: NormalisedHeaders -> CanonicalHeaders
-canonicalHeaders = Tag . Foldable.foldMap (uncurry f) . untag
+canonicalHeaders = Tag . BSL.toStrict . BSB.toLazyByteString . Foldable.foldMap (uncurry f) . untag
   where
-    f k v = k <> ":" <> stripBS v <> "\n"
+    f k v = BSB.byteString k <> BSB.char7 ':' <> BSB.byteString (stripBS v) <> BSB.char7 '\n'
 
 signedHeaders :: NormalisedHeaders -> SignedHeaders
 signedHeaders = Tag . BS8.intercalate ";" . map fst . untag
