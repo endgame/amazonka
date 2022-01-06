@@ -14,12 +14,11 @@ import Amazonka.Lens ((%~), (<>~), (^.))
 import Amazonka.Prelude
 import Amazonka.Request
 import Amazonka.Types
+import qualified Data.Map.Strict as Map
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.CaseInsensitive as CI
 import qualified Data.Foldable as Foldable
-import qualified Data.Function as Function
-import qualified Data.List as List
 import qualified Network.HTTP.Client as Client
 import qualified Network.HTTP.Types as HTTP
 
@@ -36,7 +35,7 @@ data V4 = V4
     metaStringToSign :: StringToSign,
     metaSignature :: Signature,
     metaHeaders :: [Header],
-    metaTimeout :: (Maybe Seconds)
+    metaTimeout :: Maybe Seconds
   }
 
 instance ToLog V4 where
@@ -129,14 +128,11 @@ type Path = Tag "path" ByteString
 type Signature = Tag "signature" ByteString
 
 authorisation :: V4 -> ByteString
-authorisation V4 {..} =
-  algorithm
-    <> " Credential="
-    <> toBS metaCredential
-    <> ", SignedHeaders="
-    <> toBS metaSignedHeaders
-    <> ", Signature="
-    <> toBS metaSignature
+authorisation V4 {..} = mconcat
+  [ algorithm
+  , " Credential=", toBS metaCredential
+  , ", SignedHeaders=", toBS metaSignedHeaders
+  , ", Signature=", toBS metaSignature ]
 
 signRequest ::
   -- | Pre-signRequestd signing metadata.
@@ -280,10 +276,10 @@ signedHeaders = Tag . BS8.intercalate ";" . map fst . untag
 
 normaliseHeaders :: [Header] -> NormalisedHeaders
 normaliseHeaders =
-  -- FIXME: convert this to an ordered map.
   Tag
     . map (first CI.foldedCase)
-    . List.nubBy ((==) `Function.on` fst)
-    . List.sortBy (compare `Function.on` fst)
-    . filter ((/= "authorization") . fst)
-    . filter ((/= "content-length") . fst)
+    . Map.toList
+    . Map.delete "authorization"
+    . Map.delete "content-length"
+    . Map.fromListWith const
+
