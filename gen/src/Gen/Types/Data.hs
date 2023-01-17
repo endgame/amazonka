@@ -13,7 +13,6 @@ import Gen.Prelude
 import Gen.Types.Ann
 import Gen.Types.Help
 import Gen.Types.Id
-import Gen.Types.TypeOf
 
 type Rendered = TextLazy
 
@@ -60,7 +59,7 @@ prodToJSON s Prod' {..} is =
     "lenses" .= _prodLenses,
     "instances" .= is,
     "shared" .= isShared s,
-    "eq" .= isEq s
+    "eq" .= isEq (_annType s)
   ]
 
 data Sum = Sum'

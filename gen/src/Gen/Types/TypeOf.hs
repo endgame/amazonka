@@ -1,121 +1,140 @@
+{-# LANGUAGE TemplateHaskell #-}
+
 module Gen.Types.TypeOf
-  ( TypeOf (..),
-    derivingOf,
-    derivingBase,
-    pointerTo,
-    isEq,
-    isHashable,
-    isNFData,
+  ( typeOf,
+    shapeDerives,
     typeDefault,
     typeMember,
   )
 where
 
-import qualified Data.List as List
+import Control.Lens (at, use, (<%=), _Just)
+import Control.Lens.TH (makeLenses)
+import Control.Monad.State.Strict (execState)
+import Data.Foldable.WithIndex (ifor_)
+import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Gen.Prelude
 import Gen.Types.Ann
 import Gen.Types.Id
 import Gen.Types.Service
 
-class TypeOf a where
-  typeOf :: a -> TType
-
-instance TypeOf TType where
-  typeOf = id
-
-instance TypeOf Solved where
-  typeOf = _annType
-
-instance HasId a => TypeOf (Shape a) where
-  typeOf (x :< s) = sensitive s (shape s)
-    where
-      n = identifier x
-
-      shape = \case
-        Ptr _ t -> t
-        Struct st -> TType (typeId n) (struct st)
-        Enum {} -> TType (typeId n) (ord <> derivingBase)
-        List (ListF i e)
-          | nonEmpty i -> TList1 (typeOf e)
-          | otherwise -> TList (typeOf e)
-        Map (MapF _ k v) ->
-          case typeOf k of
-            TSensitive t -> TMap t (typeOf v)
-            t -> TMap t (typeOf v)
-        Lit i l -> literal i l
-
-      literal i = \case
-        Int -> natural i (TLit Int)
-        Long -> natural i (TLit Long)
-        Base64 | isStreaming i -> TStream
-        Bytes | isStreaming i -> TStream
-        l -> TLit l
-
-      struct st
-        | isStreaming st = stream
-        | otherwise =
-          uniq $
-            foldr (List.intersect . derivingOf) derivingBase (st ^.. references)
-
-instance HasId a => TypeOf (RefF (Shape a)) where
-  typeOf r
-    | isStreaming r = TStream
-    | otherwise = typeOf (r ^. refAnn)
-
-isEq, isHashable, isNFData :: TypeOf a => a -> Bool
-isEq = elem DEq . derivingOf
-isHashable = elem DHashable . derivingOf
-isNFData = elem DNFData . derivingOf
-
--- FIXME: this whole concept of pointers and limiting the recursion stack
--- when calculating types is broken - there are plenty of more robust/sane
--- ways to acheive this, revisit.
-pointerTo :: Id -> ShapeF a -> TType
-pointerTo n = \case
-  List (ListF i e)
-    | nonEmpty i -> TList1 (t (_refShape e))
-    | otherwise -> TList (t (_refShape e))
-  Map (MapF _ k v) -> TMap (t (_refShape k)) (t (_refShape v))
-  _ -> t n
+-- | Compute the type of a shape, in a way that does not require us to
+-- first elaborate the set of shapes into the 'Cofree' structure.
+--
+-- See 'shapeDerives' to compute the @Map Id (Set Derive)@.
+typeOf :: Map Id (Set Derive) -> Map Id (ShapeF ttype a) -> Id -> TType
+typeOf derives shapeMap = go
   where
-    t x = TType (typeId x) derivingBase
+    go ident = sensitive (shape ident) $ case shape ident of
+      Ptr _ ttype -> ttype
+      Struct {} -> TType (typeId ident) (deriv ident)
+      Enum {} -> TType (typeId ident) (deriv ident)
+      List _ list@(ListF _ elements)
+        | nonEmpty list -> TList1 . go $ _refShape elements
+        | otherwise -> TList . go $ _refShape elements
+      Map _ (MapF _ k v) ->
+        case go $ _refShape k of
+          TSensitive t -> TMap t . go $ _refShape v
+          t -> TMap t . go $ _refShape v
+      Lit inf lit -> case lit of
+        Int -> natural inf $ TLit Int
+        Long -> natural inf $ TLit Long
+        Base64 | isStreaming inf -> TStream
+        Bytes | isStreaming inf -> TStream
+        _ -> TLit lit
 
-derivingOf :: TypeOf a => a -> [Derive]
-derivingOf = uniq . typ . typeOf
+    sensitive :: HasInfo i => i -> TType -> TType
+    sensitive inf
+      | inf ^. infoSensitive = TSensitive
+      | otherwise = id
+
+    shape n = case Map.lookup n shapeMap of
+      Nothing -> error $ "shapeType: Missing shape " ++ show n ++ " in map"
+      Just s -> s
+
+    deriv n = case Map.lookup n derives of
+      Nothing -> error $ "shapeType: Missing shape " ++ show n ++ " in derives"
+      Just d -> d
+
+    natural :: Info -> TType -> TType
+    natural x
+      | Just i <- x ^. infoMin, i >= 0 = const TNatural
+      | otherwise = id
+
+-- | Implement a simple propagator network for computing the set of
+-- derivable classes for each 'Id'. This allows us to handle cycles in
+-- our logic, like this example from @emr-containers@:
+--
+-- * A struct should derive the intersection of what its fields can derive
+-- * A list should derive what its element type can derive, plus Monoid
+-- * A @Configuration@ contains a @ConfigurationList@ contains a @Configuration@
+data PropagatorState = PropagatorState
+  { _cells :: Map Id (Set Derive),
+    -- | Other cells to notify on an update.
+    _propagators :: Map Id [(Id, Set Derive -> Set Derive)]
+  }
+
+$(makeLenses ''PropagatorState)
+
+shapeDerives :: Map Id (ShapeF ttype a) -> Map Id (Set Derive)
+shapeDerives shapeMap = _cells . flip execState initialState $ do
+  setUpPropagators
+  ifor_ shapeMap $ \ident -> \case
+    Ptr _ typ -> addInfo ident $ ttypeDerives typ
+    List {} -> pure ()
+    Map {} -> pure ()
+    Struct {} -> addInfo ident $ derivingBase
+    Enum {} -> addInfo ident (derivingBase <> dOrd)
+    Lit inf lit -> addInfo ident $ case lit of
+      Base64 | isStreaming inf -> dStream
+      Bytes | isStreaming inf -> dStream
+      _ -> litDerives lit
   where
-    typ = \case
-      TType _ ds -> ds
-      TLit l -> lit l
-      TNatural -> derivingBase <> num
-      TStream -> stream
-      TMaybe t -> typ t
-      TSensitive t -> DShow : List.delete DRead (typ t)
-      TList e -> monoid <> List.intersect derivingBase (typ e)
-      TList1 e -> DSemigroup : List.intersect derivingBase (typ e)
-      TMap k v -> monoid <> List.intersect (typ k) (typ v)
+    initialState :: PropagatorState
+    initialState =
+      PropagatorState
+        { _cells = universe <$ shapeMap,
+          _propagators = mempty <$ shapeMap
+        }
 
-    lit = \case
-      Int -> derivingBase <> num
-      Long -> derivingBase <> num
-      Double -> derivingBase <> frac
-      Text -> derivingBase <> string
-      Base64 -> derivingBase
-      Bytes -> derivingBase
-      Time -> DOrd : derivingBase
-      Bool -> derivingBase <> enum
-      Json -> [DEq, DShow, DGeneric, DHashable, DNFData]
+    universe :: Set Derive
+    universe = Set.fromList [minBound .. maxBound]
 
-stream, string, num, frac, monoid, enum, ord :: [Derive]
-stream = [DShow, DGeneric]
-string = [DOrd, DIsString]
-num = DNum : DIntegral : DReal : enum
-frac = [DOrd, DRealFrac, DRealFloat]
-monoid = [DMonoid, DSemigroup]
-enum = [DOrd, DEnum, DBounded]
-ord = [DOrd]
+    addInfo :: Id -> Set Derive -> State PropagatorState ()
+    addInfo ident set = do
+      old <- use $ cells . at ident . _Just
+      new <- cells . at ident . _Just <%= Set.intersection set
+      unless (old == new) $ runPropagators ident
 
-derivingBase :: [Derive]
-derivingBase = [DEq, DRead, DShow, DGeneric, DHashable, DNFData]
+    runPropagators :: Id -> State PropagatorState ()
+    runPropagators ident = do
+      set <- use $ cells . at ident . _Just
+      use (propagators . at ident) >>= \case
+        Nothing -> pure ()
+        Just props -> for_ props $ \(dest, f) -> addInfo dest $ f set
+
+    setUpPropagators :: State PropagatorState ()
+    setUpPropagators = do
+      ifor_ shapeMap $ \ident x -> do
+        case x of
+          Ptr {} -> pure ()
+          List _ list@(ListF _ elements)
+            | nonEmpty list ->
+                addPropagator (_refShape elements) ident $ Set.insert DSemigroup
+            | otherwise ->
+                addPropagator (_refShape elements) ident $ Set.union dMonoid
+          Map _ (MapF _ k v) -> do
+            addPropagator (_refShape k) ident $ Set.union dMonoid
+            addPropagator (_refShape v) ident $ Set.union dMonoid
+          Struct _ (st@StructF {_members}) ->
+            unless (isStreaming st) . for_ (_refShape <$> _members) $ \member ->
+              addPropagator member ident id
+          Enum {} -> pure ()
+          Lit {} -> pure ()
+
+    addPropagator :: Id -> Id -> (Set Derive -> Set Derive) -> State PropagatorState ()
+    addPropagator from to f = propagators . at from . _Just %= ((to, f) :)
 
 typeDefault :: TType -> Bool
 typeDefault = \case
@@ -137,18 +156,3 @@ typeMember x = \case
   TList e -> typeMember x e
   TList1 e -> typeMember x e
   TMap k v -> typeMember x k || typeMember x v
-
-natural :: HasInfo a => a -> TType -> TType
-natural x
-  | Just i <- x ^. infoMin,
-    i >= 0 =
-    const TNatural
-  | otherwise = id
-
-sensitive :: HasInfo a => a -> TType -> TType
-sensitive x
-  | x ^. infoSensitive = TSensitive
-  | otherwise = id
-
-uniq :: Ord a => [a] -> [a]
-uniq = List.sort . List.nub

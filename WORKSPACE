@@ -349,6 +349,7 @@ stack_snapshot(
         "http-client",
         "http-conduit",
         "http-types",
+        "indexed-traversable",
         "ini",
         "json",  # keep
         "lens",  # keep

@@ -22,6 +22,9 @@ data Field = Field
     _fieldId :: Id,
     -- | The original struct member reference.
     _fieldRef :: Ref,
+    -- | The type computed for this field (including final tweaks like
+    -- wrapping a 'TMaybe' around optional fields).
+    _fieldTType :: TType,
     -- | Does the struct have this member in the required set.
     _fieldRequire :: Bool,
     -- | Does the struct have this memeber marked as the payload.
@@ -37,55 +40,27 @@ $(Lens.makeLenses ''Field)
 instance IsStreaming Field where
   isStreaming = isStreaming . _fieldRef
 
-instance TypeOf Field where
-  typeOf f
-    | isStreaming ref = typ
-    | isKinded, isHeader = typ
-    | f ^. fieldRequire = typ
-    | otherwise = TMaybe typ
-    where
-      isKinded =
-        case typ of
-          TMap {} -> True
-          TList {} -> True
-          _ -> False
-
-      isHeader =
-        fieldLocation f
-          `elem` map
-            Just
-            [ Headers,
-              Header
-            ]
-
-      ref = f ^. fieldRef
-      typ = fmap unBase64 (typeOf ref)
-
-      unBase64 = \case
-        Base64 | f ^. fieldPayload -> Bytes
-        lit -> lit
-
 instance HasInfo Field where
   info = fieldAnn . info
 
 -- FIXME: Can just add the metadata to field as well since
 -- the protocol/timestamp are passed in everywhere in the .Syntax module.
 mkFields ::
-  HasMetadata a Identity =>
-  a ->
+  Service Identity a (Shape b) c ->
   Solved ->
   StructF (Shape Solved) ->
   [Field]
-mkFields (Lens.view metadata -> m) s st =
+mkFields svc s st =
   sortFields rs $ zipWith mk [1 ..] $ Map.toAscList (st ^. members)
   where
     mk :: Int -> (Id, Ref) -> Field
-    mk i (k, v) =
+    mk i (k, ref) =
       Field
-        { _fieldMeta = m,
+        { _fieldMeta = meta,
           _fieldOrdinal = i,
           _fieldId = k,
-          _fieldRef = v,
+          _fieldRef = ref,
+          _fieldTType = refType',
           _fieldRequire = req,
           _fieldPayload = pay,
           _fieldPrefix = p,
@@ -93,13 +68,32 @@ mkFields (Lens.view metadata -> m) s st =
           _fieldDirection = d
         }
       where
+        -- Final tweaks before generation
+        refType'
+          | isStreaming ref = refType
+          | isKinded, isHeader = refType
+          | req = refType
+          | otherwise = TMaybe refType
+          where
+            isKinded = case refType of
+              TMap {} -> True
+              TList {} -> True
+              _ -> False
+
+            isHeader = ref ^. refLocation `elem` [Just Headers, Just Header]
+
+            refType = ref ^. refAnn . Lens.to shapeTType <&> \case
+                Base64 | pay -> Bytes
+                lit -> lit
+
         req = k `elem` rs
         pay = Just k == st ^. payload
 
         ns =
-          (Lens.view xmlUri <$> v ^. refXMLNamespace)
-            <|> (m ^. xmlNamespace)
+          (Lens.view xmlUri <$> ref ^. refXMLNamespace)
+            <|> (meta ^. xmlNamespace)
 
+    meta = svc ^. metadata
     rs = st ^.. getRequired
     p = s ^. annPrefix
 
@@ -137,7 +131,7 @@ fieldParamName =
 
 fieldHelp :: Field -> Help
 fieldHelp f =
-  fromMaybe def (f ^. fieldRef . refDocumentation) <> ann (typeOf f)
+  fromMaybe def (f ^. fieldRef . refDocumentation) <> ann (_fieldTType f)
   where
     ann (TMaybe t) = ann t
     ann (TSensitive t) = ann t
@@ -175,24 +169,25 @@ fieldLitPayload x = _fieldPayload x && (fieldLit x || fieldBytes x)
 
 -- This is hilariously brittle.
 fieldBytes :: Field -> Bool
-fieldBytes = typeMember (Right Bytes) . typeOf
+fieldBytes = typeMember (Right Bytes) . _fieldTType
 
 fieldMaybe :: Field -> Bool
 fieldMaybe x =
-  case typeOf x of
+  case _fieldTType x of
     TMaybe {} -> True
     _ -> False
 
 fieldSensitive :: Field -> Bool
 fieldSensitive x =
-  case typeOf x of
+  case _fieldTType x of
     TSensitive {} -> True
     TMaybe (TSensitive {}) -> True
     _ -> False
 
 fieldMonoid :: Field -> Bool
-fieldMonoid = elem DMonoid . derivingOf . Lens.view fieldAnn
+fieldMonoid = isMonoid . _fieldTType
 
+-- FIXME: Do these need to consider 'Ptr's?
 fieldList1, fieldList, fieldMap, fieldLit :: Field -> Bool
 fieldList1 f = fieldList f && nonEmpty f
 fieldList = not . Lens.isn't _List . Cofree.unwrap . Lens.view fieldAnn

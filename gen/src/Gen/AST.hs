@@ -5,8 +5,8 @@ import qualified Control.Lens as Lens
 import qualified Control.Monad.Except as Except
 import Control.Monad.State.Strict (execState, modify)
 import qualified Control.Monad.State.Strict as State
-import qualified Data.Map.Strict as Map
 import qualified Data.HashSet as HashSet
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import Gen.AST.Cofree
@@ -22,7 +22,7 @@ import Gen.Types
 rewrite ::
   Versions ->
   Config ->
-  Service Maybe (RefF ()) (ShapeF ()) (Waiter Id) ->
+  Service Maybe (RefF ()) (ShapeF () ()) (Waiter Id) ->
   Either String Library
 rewrite _versions' _config' s' = do
   rewrittenService <- rewriteService _config' (ignore _config' (deprecate s'))
@@ -40,15 +40,15 @@ rewrite _versions' _config' s' = do
           Nothing -> []
           Just (_ :< shape) -> case shape of
             Ptr {} -> [] -- A top-level lookup should never be a Ptr
-            Struct StructF {_members} -> _members ^.. traverse . importedTypes
-            List ListF {_listItem} -> _listItem ^.. importedTypes
-            Map MapF {_mapKey, _mapValue} -> [_mapKey, _mapValue] ^.. traverse . importedTypes
+            Struct _ StructF {_members} -> _members ^.. traverse . refAnn . importedTypes
+            List _ ListF {_listItem} -> _listItem ^.. refAnn . importedTypes
+            Map _ MapF {_mapKey, _mapValue} -> [_mapKey, _mapValue] ^.. traverse . refAnn . importedTypes
             Enum {} -> []
             Lit {} -> []
 
-      -- A 'Lens.Fold' over any type names that 't' will have to import.
-      importedTypes :: TypeOf t => Lens.Fold t Text
-      importedTypes = Lens.to (typeNames . typeOf) . traverse
+      -- A 'Lens.Fold' over any type names that the shape will have to import.
+      importedTypes :: Lens.Fold (Shape a) Text
+      importedTypes = Lens.to (typeNames . shapeTType) . traverse
         where
           typeNames = \case
             TType t _ -> [t]
@@ -82,7 +82,7 @@ ignore c srv =
 
 rewriteService ::
   Config ->
-  Service Maybe (RefF ()) (ShapeF ()) (Waiter Id) ->
+  Service Maybe (RefF ()) (ShapeF () ()) (Waiter Id) ->
   Either String (Service Identity (RefF ()) (Shape Related) (Waiter Id))
 rewriteService cfg s = do
   -- Determine which direction (input, output, or both) shapes are used.
@@ -137,9 +137,9 @@ type MemoR = StateT (Map Id Relation, HashSet (Id, Direction, Id)) (Either Strin
 -- /Note:/ This currently doesn't operate over the free AST, since it's also
 -- used by 'setDefaults'.
 relations ::
-  Show a =>
+  (Show ttype, Show a) =>
   Map Id (Operation Maybe (RefF b) c) ->
-  Map Id (ShapeF a) ->
+  Map Id (ShapeF ttype a) ->
   Either String (Map Id Relation)
 relations os ss = fst <$> State.execStateT (traverse go os) (mempty, mempty)
   where
@@ -158,7 +158,7 @@ relations os ss = fst <$> State.execStateT (traverse go os) (mempty, mempty)
         s <- lift (safe n)
         shape n d s
 
-    shape :: Id -> Direction -> ShapeF a -> MemoR ()
+    shape :: Id -> Direction -> ShapeF ttype a -> MemoR ()
     shape p d =
       mapM_ (count (Just p) d . Just . Lens.view refShape)
         . Lens.toListOf references
@@ -189,17 +189,17 @@ solve ::
   Config ->
   t (Shape Prefixed) ->
   t (Shape Solved)
-solve cfg ss = State.evalState (go ss) (replaced typeOf cfg)
+solve cfg ss = State.evalState (go ss) replacements
   where
-    go = traverse (annotate Solved id (pure . typeOf))
+    go = traverse (annotate Solved id (pure . shapeTType))
 
-    replaced :: (Replace -> a) -> Config -> Map Id a
-    replaced f =
+    replacements :: Map Id TType
+    replacements =
       Map.fromList
-        . map (_replaceName &&& f)
+        . map (_replaceName &&& replaceTType)
         . Map.elems
         . vMapMaybe _replacedBy
-        . _typeOverrides
+        $ _typeOverrides cfg
 
 type MemoS a = StateT (Map Id a) (Either String)
 

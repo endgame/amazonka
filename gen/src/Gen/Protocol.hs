@@ -39,8 +39,8 @@ memberName p d n r =
 nestedNames :: Protocol -> Direction -> Id -> RefF (Shape a) -> Names
 nestedNames p d n r =
   case Cofree.unwrap (r ^. refAnn) of
-    Map m -> mapNames p d n r m
-    List l -> listNames p d n r l
+    Map _ m -> mapNames p d n r m
+    List _ l -> listNames p d n r l
     _ -> NName (name p d n r)
 
 listNames :: Protocol -> Direction -> Id -> RefF a -> ListF a -> Names

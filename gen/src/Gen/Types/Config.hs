@@ -7,6 +7,7 @@ import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import qualified Data.Aeson as Aeson
 import qualified Data.List as List
 import Data.Ord (Down (..))
+import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Time as Time
 import Gen.Prelude
@@ -17,13 +18,12 @@ import Gen.Types.Data
 import Gen.Types.Id
 import Gen.Types.NS
 import Gen.Types.Service
-import Gen.Types.TypeOf
 import qualified System.FilePath as FilePath
 import Text.EDE (Template)
 
 data Replace = Replace
   { _replaceName :: Id,
-    _replaceUnderive :: [Derive]
+    _replaceUnderive :: Set Derive
   }
   deriving (Eq, Show, Generic)
 
@@ -32,9 +32,9 @@ $(Lens.makeLenses ''Replace)
 instance FromJSON Replace where
   parseJSON = gParseJSON' (lower & field %~ (. stripPrefix "replace"))
 
-instance TypeOf Replace where
-  typeOf Replace {..} =
-    TType (typeId _replaceName) (derivingBase List.\\ _replaceUnderive)
+replaceTType :: Replace -> TType
+replaceTType Replace {..} =
+  TType (typeId _replaceName) (Set.difference derivingBase _replaceUnderive)
 
 data Override = Override
   { -- | Rename type

@@ -55,12 +55,12 @@ assignPrefix = annotate Prefixed memo go
       let n = typeId (identifier x)
           r = x ^. relation
        in case s of
-            Enum _ vs ->
+            Enum _ _ vs ->
               Just <$> do
                 let hs = acronymPrefixes r n
                     ks = keys vs
                 unique r branches n hs ks
-            Struct st ->
+            Struct _ st ->
               Just <$> do
                 let hs = acronymPrefixes r n
                     ks = keys (st ^. members)

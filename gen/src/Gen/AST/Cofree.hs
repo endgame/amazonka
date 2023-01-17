@@ -68,41 +68,42 @@ runMemoE = flip State.evalStateT mempty
 -- nested structure definitions, but mutually-recursive shape
 -- references are broken by returning 'Ptr's as loop breakers.
 --
--- We never return a 'Ptr' in the first layer of the 'HashMap''s
+-- We never return a 'Ptr' in the first layer of the 'Map''s
 -- values.
 elaborate ::
-  forall a.
-  Show a =>
-  Map Id (ShapeF a) ->
+  Map Id (ShapeF () ()) ->
   Either String (Map Id (Shape Id))
-elaborate m = runMemoE $ Map.traverseWithKey (shape mempty) m
+elaborate shapeMap = runMemoE $ Map.traverseWithKey (addShape mempty) shapeMap
   where
-    shape :: Set Id -> Id -> ShapeF a -> MemoE (Shape Id)
-    shape seen n s
-      | n `elem` seen = pure $! n :< Ptr (s ^. info) (pointerTo n s)
-      | otherwise = do
-        ms <- State.gets (Map.lookup n)
-        case ms of
-          Just x -> pure x
-          Nothing -> do
-            x <- (n :<) <$> Lens.traverseOf references (ref (Set.insert n seen)) s
-            State.modify' (Map.insert n x)
-            pure x
+    addShape :: Set Id -> Id -> ShapeF () () -> MemoE (Shape Id)
+    addShape seen n shapeF
+      | n `elem` seen =
+          pure $! n :< Ptr (shapeF ^. info) (typeOf derives shapeMap n)
+      | otherwise =
+          State.gets (Map.lookup n) >>= \case
+            Just shape -> pure shape
+            Nothing -> do
+              let shapeF' = addTType (typeOf derives shapeMap n) shapeF
+              shape <- (n :<) <$> Lens.traverseOf references (ref (Set.insert n seen)) shapeF'
+              State.modify' (Map.insert n shape)
+              pure shape
 
-    ref :: Set Id -> RefF a -> MemoE (RefF (Shape Id))
+    ref :: Set Id -> RefF () -> MemoE (RefF (Shape Id))
     ref seen r = do
       let n = r ^. refShape
-      s <- findShape n >>= shape seen n
+      s <- findShape n >>= addShape seen n
       pure $ r & refAnn .~ s
 
-    findShape :: Id -> MemoE (ShapeF a)
-    findShape n = case Map.lookup n m of
+    findShape :: Id -> MemoE (ShapeF () ())
+    findShape n = case Map.lookup n shapeMap of
       Nothing ->
         Except.throwError $
           unwords
             [ "Missing shape ",
               Text.unpack (memberId n),
               ", possible matches: ",
-              partial n m
+              partial n shapeMap
             ]
       Just s -> pure s
+
+    derives = shapeDerives shapeMap

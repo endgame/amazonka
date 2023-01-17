@@ -75,6 +75,7 @@ haskell_library(
         "@stackage//:free",
         "@stackage//:hashable",
         "@stackage//:haskell-src-exts",
+        "@stackage//:indexed-traversable",
         "@stackage//:lens",
         "@stackage//:mtl",
         "@stackage//:pandoc",

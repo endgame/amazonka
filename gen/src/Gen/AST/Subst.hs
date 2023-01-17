@@ -94,7 +94,7 @@ substitute svc@Service {..} = do
     subst d n Nothing = do
       verify n "Failure attempting to substitute fresh shape"
       -- No Ref exists, safely insert an empty shape and pure a related Ref.
-      save n (Related n (mkRelation Nothing d) :< emptyStruct)
+      save n (Related n (mkRelation Nothing d) :< emptyStruct (typeId n))
       pure (emptyRef n)
     subst d n (Just r) = do
       let k = r ^. refShape
@@ -121,12 +121,13 @@ substitute svc@Service {..} = do
             rename k n
             pure r
 
-addStatus :: Direction -> Id -> ShapeF (Shape Related) -> ShapeF (Shape Related)
+addStatus ::
+  Direction -> Id -> ShapeF ttype (Shape Related) -> ShapeF ttype (Shape Related)
 addStatus Input _k = id
 addStatus Output _k = go
   where
     go = \case
-      Struct st -> Struct (maybe missing exists mstatus)
+      Struct ttype st -> Struct ttype (maybe missing exists mstatus)
         where
           mstatus =
             List.find ((Just StatusCode ==) . Lens.view refLocation . snd) $
@@ -180,8 +181,9 @@ infixl 7 .!
 (.!) :: Maybe a -> a -> Identity a
 m .! x = maybe (Identity x) Identity m
 
-emptyStruct :: ShapeF a
-emptyStruct = Struct (StructF emptyInfo mempty mempty Nothing)
+emptyStruct :: Text -> ShapeF TType a
+emptyStruct name =
+  Struct (TType name mempty) (StructF emptyInfo mempty mempty Nothing)
 
 emptyInfo :: Info
 emptyInfo =

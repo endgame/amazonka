@@ -7,8 +7,8 @@ import qualified Control.Comonad.Cofree as Cofree
 import qualified Control.Lens as Lens
 import Data.Aeson ((.!=), (.:), (.:?), (.=))
 import qualified Data.Aeson as Aeson
-import qualified Data.Map.Strict as Map
 import qualified Data.List as List
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import Gen.Prelude
 import Gen.TH
@@ -301,52 +301,61 @@ instance FromJSON (Info -> StructF ()) where
             | p == n = r & refLocation ?~ Body
             | otherwise = r
 
-data ShapeF a
-  = Ptr Info TType
-  | List (ListF a)
-  | Map (MapF a)
-  | Struct (StructF a)
-  | Enum Info (Map Id Text)
-  | Lit Info Lit
+data ShapeF ttype a
+  = Ptr Info TType -- ^ Always knows its 'TType'.
+  | List ttype (ListF a)
+  | Map ttype (MapF a)
+  | Struct ttype (StructF a)
+  | Enum Info ttype (Map Id Text)
+  | Lit Info Lit -- ^ 'Lit' carries enough type information.
   deriving (Functor, Foldable, Traversable)
+
+addTType :: TType -> ShapeF x a -> ShapeF TType a
+addTType ttype = \case
+  Ptr i _ -> Ptr i ttype
+  List _ l -> List ttype l
+  Map _ m -> Map ttype m
+  Struct _ s -> Struct ttype s
+  Enum i _ m -> Enum i ttype m
+  Lit i l -> Lit i l
 
 $(Deriving.deriveShow1 ''ShapeF)
 $(Deriving.deriveShow ''ShapeF)
 $(Lens.makePrisms ''ShapeF)
 
-instance HasInfo (ShapeF a) where
+instance HasInfo (ShapeF ttype a) where
   info f = \case
     Ptr i ds -> (`Ptr` ds) <$> f i
-    List l -> List <$> info f l
-    Map m -> Map <$> info f m
-    Struct s -> Struct <$> info f s
-    Enum i vs -> (`Enum` vs) <$> f i
+    List ttype l -> List ttype <$> info f l
+    Map ttype m -> Map ttype <$> info f m
+    Struct ttype s -> Struct ttype <$> info f s
+    Enum i ttype vs -> f i <&> \i' -> Enum i' ttype vs
     Lit i l -> (`Lit` l) <$> f i
 
-instance HasInfo (Cofree ShapeF a) where
+instance HasInfo (Cofree (ShapeF ttype) a) where
   info = Lens.lens Cofree.unwrap go . info
     where
       go s a = Comonad.extract s :< a
 
-instance HasRefs ShapeF where
+instance HasRefs (ShapeF ttype) where
   references f = \case
     Ptr i ds -> pure (Ptr i ds)
-    List l -> List <$> references f l
-    Map m -> Map <$> references f m
-    Struct s -> Struct <$> references f s
-    Enum i vs -> pure (Enum i vs)
+    List ttype l -> List ttype <$> references f l
+    Map ttype m -> Map ttype <$> references f m
+    Struct ttype s -> Struct ttype <$> references f s
+    Enum i ttype vs -> pure (Enum i ttype vs)
     Lit i l -> pure (Lit i l)
 
-instance FromJSON (ShapeF ()) where
+instance FromJSON (ShapeF () ()) where
   parseJSON = Aeson.withObject "shape" $ \o -> do
     i <- Aeson.parseJSON (Aeson.Object o)
     t <- o .: "type"
     m <- o .:? "enum"
 
     case t of
-      "list" -> List . ($ i) <$> Aeson.parseJSON (Aeson.Object o)
-      "map" -> Map . ($ i) <$> Aeson.parseJSON (Aeson.Object o)
-      "structure" -> Struct . ($ i) <$> Aeson.parseJSON (Aeson.Object o)
+      "list" -> List () . ($ i) <$> Aeson.parseJSON (Aeson.Object o)
+      "map" -> Map () . ($ i) <$> Aeson.parseJSON (Aeson.Object o)
+      "structure" -> Struct () . ($ i) <$> Aeson.parseJSON (Aeson.Object o)
       "integer" -> pure (Lit i Int)
       "long" -> pure (Lit i Long)
       "double" -> pure (Lit i Double)
@@ -358,7 +367,7 @@ instance FromJSON (ShapeF ()) where
       "json" -> pure (Lit i Json)
       "string" -> pure (maybe (Lit i Text) f m)
         where
-          f = Enum i . Map.fromList . map (first mkId . renameBranch)
+          f = Enum i () . Map.fromList . map (first mkId . renameBranch)
       _ -> fail $ "Unknown Shape type: " ++ Text.unpack t
 
 data Operation f a b = Operation
@@ -472,7 +481,7 @@ $(Lens.makeClassy ''Service)
 instance HasMetadata (Service f a b c) f where
   metadata = metadata'
 
-instance FromJSON (Service Maybe (RefF ()) (ShapeF ()) (Waiter Id)) where
+instance FromJSON (Service Maybe (RefF ()) (ShapeF () ()) (Waiter Id)) where
   parseJSON =
     Aeson.withObject "service" $ \o -> do
       m <- o .: "metadata"
@@ -490,7 +499,16 @@ instance FromJSON (Service Maybe (RefF ()) (ShapeF ()) (Waiter Id)) where
         Operation f a (Pager Id)
       pager ps o = o & opPager .~ Map.lookup (o ^. opName) ps
 
-type Shape = Cofree ShapeF
+type Shape = Cofree (ShapeF TType)
+
+shapeTType :: Shape a -> TType
+shapeTType (_ :< s) = case s of
+  Ptr _ t -> t
+  List t _ -> t
+  Map t _ -> t
+  Struct t _ -> t
+  Enum _ t _ -> t
+  Lit _ l -> TLit l
 
 type Ref = RefF (Shape Solved)
 
@@ -503,7 +521,7 @@ instance IsStreaming Info
 
 instance IsStreaming (StructF a)
 
-instance IsStreaming (ShapeF a)
+instance IsStreaming (ShapeF ttype a)
 
 instance IsStreaming (Shape a)
 
@@ -515,8 +533,8 @@ instance IsStreaming TType where
     TStream -> True
     _ -> False
 
-setRequired :: ([Id] -> [Id]) -> ShapeF a -> ShapeF a
-setRequired f = _Struct . required' %~ List.nub . f
+setRequired :: ([Id] -> [Id]) -> ShapeF ttype a -> ShapeF ttype a
+setRequired f = _Struct . traverse . required' %~ List.nub . f
 
 getRequired :: Lens.Fold (StructF a) Id
 getRequired = required' . Lens.each

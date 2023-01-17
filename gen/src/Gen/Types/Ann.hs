@@ -7,6 +7,7 @@ import qualified Control.Comonad.Cofree as Cofree
 import qualified Control.Lens as Lens
 import qualified Data.Aeson as Aeson
 import qualified Data.Function as Function
+import qualified Data.Set as Set
 import qualified Data.Text as Text
 import Gen.Prelude
 import Gen.TH
@@ -82,7 +83,7 @@ data Derive
   | DGeneric
   | DHashable
   | DNFData
-  deriving (Eq, Ord, Show, Generic)
+  deriving (Bounded, Enum, Eq, Generic, Ord, Show)
 
 instance Hashable Derive
 
@@ -110,8 +111,32 @@ data Lit
   | Json
   deriving (Eq, Show)
 
+derivingBase, dNum, dFrac, dString, dOrd, dEnum, dJson, dStream, dMonoid :: Set Derive
+derivingBase = Set.fromList [DEq, DRead, DShow, DGeneric, DHashable, DNFData]
+dNum = Set.fromList [DNum, DIntegral, DReal] <> dEnum
+dFrac = Set.fromList [DOrd, DRealFrac, DRealFloat]
+dString = Set.fromList [DOrd, DIsString]
+dOrd = Set.fromList [DOrd]
+dEnum = Set.fromList [DOrd, DEnum, DBounded]
+dJson = Set.fromList [DEq, DShow, DGeneric, DHashable, DNFData]
+dStream = Set.fromList [DShow, DGeneric]
+dMonoid = Set.fromList [DMonoid, DSemigroup]
+
+litDerives :: Lit -> Set Derive
+litDerives = \case
+  Int -> derivingBase <> dNum
+  Long -> derivingBase <> dNum
+  Double -> derivingBase <> dFrac
+  Text -> derivingBase <> dString
+  Base64 -> derivingBase
+  Bytes -> derivingBase
+  Time -> derivingBase <> dOrd
+  Bool -> derivingBase <> dEnum
+  Json -> dJson
+  where
+
 data TypeF a
-  = TType Text [Derive]
+  = TType Text (Set Derive)
   | TLit a
   | TNatural
   | TStream
@@ -124,6 +149,24 @@ data TypeF a
 
 -- FIXME: Moving to a fixpoint required too many initial changes - revisit.
 type TType = TypeF Lit
+
+ttypeDerives :: TType -> Set Derive
+ttypeDerives = \case
+  TType _ ds -> ds
+  TLit lit -> litDerives lit
+  TNatural -> litDerives Long
+  TStream -> dStream
+  TMaybe t -> ttypeDerives t
+  TSensitive t -> Set.insert DShow . Set.delete DRead $ ttypeDerives t
+  TList t -> Set.insert DMonoid $ ttypeDerives (TList1 t)
+  TList1 t -> Set.insert DSemigroup $ ttypeDerives t
+  TMap k v -> dMonoid <> Set.intersection (ttypeDerives k) (ttypeDerives v)
+
+isEq, isHashable, isMonoid, isNFData :: TType -> Bool
+isEq = elem DEq . ttypeDerives
+isHashable = elem DHashable . ttypeDerives
+isMonoid = elem DMonoid . ttypeDerives
+isNFData = elem DNFData . ttypeDerives
 
 data Related = Related
   { _annId :: Id,

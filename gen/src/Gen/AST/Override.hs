@@ -84,7 +84,7 @@ overrideShape ovs n c@(_ :< s) = go -- env memo n >>= maybe go (return . (n,))
     pointer :: Replace -> MemoS (Shape Related)
     pointer r =
       save $
-        (Comonad.extract c & annId .~ n) :< Ptr (s ^. info) (typeOf r)
+        (Comonad.extract c & annId .~ n) :< Ptr (s ^. info) (replaceTType r)
 
     shape :: MemoS (Shape Related)
     shape = do
@@ -99,19 +99,19 @@ overrideShape ovs n c@(_ :< s) = go -- env memo n >>= maybe go (return . (n,))
       flip (Lens.set refAnn) r . snd
         <$> overrideShape ovs (r ^. refShape) (r ^. refAnn)
 
-    rules :: ShapeF a -> MemoS (ShapeF a)
+    rules :: ShapeF ttype a -> MemoS (ShapeF ttype a)
     rules = retype . fields . require . optional
 
-    require, optional :: ShapeF a -> ShapeF a
+    require, optional :: ShapeF ttype a -> ShapeF ttype a
     require = setRequired (<> _requiredFields)
     optional = setRequired (List.\\ _optionalFields)
 
-    fields :: ShapeF a -> ShapeF a
-    fields = _Struct . members . kvTraversal %~ first f
+    fields :: ShapeF ttype a -> ShapeF ttype a
+    fields = _Struct . traverse . members . kvTraversal %~ first f
       where
         f k = maybe k (replaceId k) (Map.lookup k _renamedFields)
 
-    retype :: ShapeF a -> MemoS (ShapeF a)
+    retype :: ShapeF ttype a -> MemoS (ShapeF ttype a)
     retype x = do
       rp <- Lens.use replaced
       rn <- Lens.use renamed

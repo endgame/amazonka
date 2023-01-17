@@ -12,8 +12,8 @@ import qualified Control.Lens as Lens
 import qualified Control.Monad.Trans.State as State
 import qualified Data.ByteString.Char8 as ByteString.Char8
 import qualified Data.Char as Char
-import qualified Data.Map.Strict as Map
 import qualified Data.List as List
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text.Encoding
@@ -27,22 +27,21 @@ import qualified Language.Haskell.Exts as Exts
 import Language.Haskell.Exts.Pretty (Pretty)
 
 operationData ::
-  HasMetadata a Identity =>
   Config ->
-  a ->
+  Service Identity a (Shape b) c ->
   Operation Identity Ref (Pager Id) ->
   Either String (Operation Identity SData (Pager Id))
-operationData cfg m o = do
+operationData cfg svc o = do
   (xa, x) <- struct (xr ^. refAnn)
   (ya, y) <- struct (yr ^. refAnn)
 
-  (xd, xs) <- prodData m xa x
-  (yd, ys) <- prodData m ya y
+  (xd, xs) <- prodData svc xa x
+  (yd, ys) <- prodData svc ya y
 
-  xis <- addInstances xa xs <$> requestInsts m (_opName o) h xr xs
+  xis <- addInstances (_annType xa) xs <$> requestInsts svc (_opName o) h xr xs
 
-  cls <- pp Print $ requestD cfg m h (xr, xis) (yr, ys)
-  mpage <- pagerFields m o >>= traverse (pp Print . pagerD xn)
+  cls <- pp Print $ requestD cfg svc h (xr, xis) (yr, ys)
+  mpage <- pagerFields svc o >>= traverse (pp Print . pagerD xn)
 
   yis' <- renderInsts p yn (responseInsts ys)
   xis' <-
@@ -56,13 +55,13 @@ operationData cfg m o = do
         _opOutput = Identity $ Prod ya yd yis'
       }
   where
-    struct (a :< Struct s) = Right (a, s)
+    struct (a :< Struct _ s) = Right (a, s)
     struct _s =
       Left $
         "Unexpected non-struct shape for operation "
           ++ Text.unpack (memberId xn)
 
-    p = m ^. protocol
+    p = svc ^. protocol
     h = o ^. opHttp
 
     xr = o ^. opInput . _Identity
@@ -72,29 +71,30 @@ operationData cfg m o = do
     yn = identifier yr
 
 shapeData ::
-  HasMetadata a Identity =>
-  a ->
+  Service Identity a (Shape b) c ->
   Shape Solved ->
   Either String (Maybe SData)
-shapeData m (a :< s) = case s of
-  _ | s ^. infoException -> Just <$> errorData m a (s ^. info)
-  Enum i vs -> Just <$> sumData p a i vs
-  Struct st -> do
-    (d, fs) <- prodData m a st
-    is <- renderInsts p (a ^. annId) (addInstances a fs (shapeInsts p r fs))
+shapeData svc (a :< s) = case s of
+  _ | s ^. infoException -> Just <$> errorData svc a (s ^. info)
+  Enum i _ vs -> Just <$> sumData p a i vs
+  Struct _ st -> do
+    (d, fs) <- prodData svc a st
+    is <-
+      renderInsts p (a ^. annId) $
+        addInstances (_annType a) fs (shapeInsts p r fs)
     pure $! Just $ Prod a d is
   _ -> pure Nothing
   where
-    p = m ^. protocol
+    p = svc ^. metadata . protocol
     r = a ^. relMode
 
-addInstances :: TypeOf a => a -> [Field] -> [Inst] -> [Inst]
-addInstances s fs =
+addInstances :: TType -> [Field] -> [Inst] -> [Inst]
+addInstances ttype fs =
   cons isHashable (IsHashable fs)
     . cons isNFData (IsNFData fs)
   where
     cons predicate x
-      | predicate s = (x :)
+      | predicate ttype = (x :)
       | otherwise = id
 
 errorData ::
@@ -163,12 +163,11 @@ sumData p s i vs = Sum s <$> mk <*> fmap Map.keys insts
     n = s ^. annId
 
 prodData ::
-  HasMetadata a Identity =>
-  a ->
+  Service Identity a (Shape b) c ->
   Solved ->
   StructF (Shape Solved) ->
   Either String (Prod, [Field])
-prodData m s st = (,fields) <$> mk
+prodData svc s st = (,fields) <$> mk
   where
     mk = do
       _prodDecl <- declaration
@@ -206,8 +205,8 @@ prodData m s st = (,fields) <$> mk
             []
             []
       -- Instance declarations for instances we derive in the real .hs file.
-      let derives = derivingOf s
-      derivedInsts <- for (mapMaybe deriveInstHead derives) $ \h ->
+      let derives = ttypeDerives $ s ^. annType
+      derivedInsts <- for (mapMaybe deriveInstHead $ toList derives) $ \h ->
         pp None $
           Exts.InstDecl
             ()
@@ -220,11 +219,11 @@ prodData m s st = (,fields) <$> mk
       -- Instance declarations which are generated from the Inst data type
       let insts =
             concat
-              [ shapeInsts (m ^. protocol) (s ^. relMode) [],
+              [ shapeInsts (svc ^. protocol) (s ^. relMode) [],
                 -- Handle the two oddballs that switch from Derive to
                 -- Inst halfway through generation.
-                [IsNFData [] | DNFData <- derives],
-                [IsHashable [] | DHashable <- derives]
+                [IsNFData [] | DNFData <- toList derives],
+                [IsHashable [] | DHashable <- toList derives]
               ]
       instInsts <- for insts $ \inst ->
         pp None $ instD (instToQualifiedText inst) n Nothing
@@ -238,7 +237,7 @@ prodData m s st = (,fields) <$> mk
           (Exts.DataType ())
           Nothing
           (Exts.DHead () (ident (typeId n)))
-          [recordD m n []]
+          [recordD svc n []]
           []
 
     selectors =
@@ -247,7 +246,7 @@ prodData m s st = (,fields) <$> mk
         [] -> []
       where
         selector comma f = do
-          doc <- pp None (Exts.FieldDecl () [ident (fieldAccessor f)] (Syntax.internal m f))
+          doc <- pp None (Exts.FieldDecl () [ident (fieldAccessor f)] (Syntax.internal svc f))
           pure (annotate f <> "    " <> (if comma then ", " else "") <> doc)
 
         annotate f =
@@ -255,10 +254,13 @@ prodData m s st = (,fields) <$> mk
             f ^. fieldRef . refDocumentation
 
     derivings =
-      pp None $
-        Exts.Deriving () Nothing $
-          map (Exts.IRule () Nothing Nothing) $
-            mapMaybe deriveInstHead $ derivingOf s
+      pp None
+        . Exts.Deriving () Nothing
+        . map (Exts.IRule () Nothing Nothing)
+        . mapMaybe deriveInstHead
+        . toList
+        . ttypeDerives
+        $ _annType s
 
     deriveInstHead :: Derive -> Maybe (Exts.InstHead ())
     deriveInstHead d = do
@@ -266,19 +268,19 @@ prodData m s st = (,fields) <$> mk
       pure $ Exts.IHCon () $ unqual $ ("Prelude." <>) $ Text.pack name
 
     fields :: [Field]
-    fields = mkFields m s st
+    fields = mkFields svc s st
 
     mkLens :: Field -> Either String Fun
     mkLens f =
       Fun' (fieldLens f) (fieldHelp f)
-        <$> pp None (lensS m (s ^. annType) f)
+        <$> pp None (lensS svc (s ^. annType) f)
         <*> pp None (lensD n f)
         <*> pure (Text.Lazy.fromStrict (fieldAccessor f))
 
     mkCtor :: Either String Fun
     mkCtor =
       Fun' (smartCtorId n) mkHelp
-        <$> (pp None (ctorS m n fields) <&> addParamComments fields)
+        <$> (pp None (ctorS svc n fields) <&> addParamComments fields)
         <*> pp Print (ctorD n fields)
         <*> pure mempty
 
@@ -303,10 +305,10 @@ prodData m s st = (,fields) <$> mk
 
         ps = map Just (filter fieldIsParam fs) ++ repeat Nothing
 
-    dependencies = foldMap go fields
+    dependencies = foldMap (go . _fieldTType) fields
       where
-        go :: TypeOf a => a -> Set.Set Text
-        go f = case (typeOf f) of
+        go :: TType -> Set.Set Text
+        go = \case
           TType x _ -> tTypeDep x
           TLit _ -> Set.empty
           TNatural -> Set.empty
@@ -352,15 +354,14 @@ serviceData m r =
           <> " configuration."
 
 waiterData ::
-  HasMetadata a Identity =>
-  a ->
-  Map Id (Operation Identity Ref b) ->
+  Service Identity a (Shape b) c ->
+  Map Id (Operation Identity Ref d) ->
   Id ->
   Waiter Id ->
   Either String WData
-waiterData m os n w = do
+waiterData svc os n w = do
   o <- note (missingErr key (_opName <$> os)) $ Map.lookup key os
-  wf <- waiterFields m o w
+  wf <- waiterFields svc o w
   c <-
     Fun' (smartCtorId n) help
       <$> pp None (waiterS n wf)
@@ -370,7 +371,8 @@ waiterData m os n w = do
   pure $! WData (typeId n) (_opName o) c
   where
     missingErr i xs =
-      "Missing operation " ++ Text.unpack (memberId i)
+      "Missing operation "
+        ++ Text.unpack (memberId i)
         ++ " when rendering waiter "
         ++ ", possible matches: "
         ++ partial i xs
@@ -378,7 +380,7 @@ waiterData m os n w = do
     help =
       Help $
         "Polls 'Amazonka."
-          <> (m ^. serviceAbbrev)
+          <> (svc ^. serviceAbbrev)
           <> "."
           <> typeId key
           <> "' every "
@@ -391,26 +393,24 @@ waiterData m os n w = do
     key = _waitOperation w
 
 waiterFields ::
-  HasMetadata a Identity =>
-  a ->
-  Operation Identity Ref b ->
+  Service Identity a (Shape b) c ->
+  Operation Identity Ref d ->
   Waiter Id ->
   Either String (Waiter Field)
-waiterFields m o = Lens.traverseOf (waitAcceptors . Lens.each) go
+waiterFields svc o = Lens.traverseOf (waitAcceptors . Lens.each) go
   where
     out = o ^. opOutput . _Identity . refAnn
 
     go :: Accept Id -> Either String (Accept Field)
     go x = do
-      n <- traverse (notation m out) (x ^. acceptArgument)
+      n <- traverse (notation svc out) (x ^. acceptArgument)
       pure $! x & acceptArgument .~ n
 
 pagerFields ::
-  HasMetadata a Identity =>
-  a ->
+  Service Identity a (Shape b) c ->
   Operation Identity Ref (Pager Id) ->
   Either String (Maybe (Pager Field))
-pagerFields m o = traverse go (o ^. opPager)
+pagerFields svc o = traverse go (o ^. opPager)
   where
     inp = o ^. opInput . _Identity . refAnn
     out = o ^. opOutput . _Identity . refAnn
@@ -418,22 +418,21 @@ pagerFields m o = traverse go (o ^. opPager)
     go :: Pager Id -> Either String (Pager Field)
     go = \case
       Only t -> Only <$> token t
-      Next ks t -> Next <$> traverse (notation m out) ks <*> token t
-      Many k ts -> Many <$> notation m out k <*> traverse token ts
+      Next ks t -> Next <$> traverse (notation svc out) ks <*> token t
+      Many k ts -> Many <$> notation svc out k <*> traverse token ts
 
     token :: Token Id -> Either String (Token Field)
     token (Token x y) =
       Token
-        <$> notation m inp x
-        <*> notation m out y
+        <$> notation svc inp x
+        <*> notation svc out y
 
 notation ::
-  HasMetadata a Identity =>
-  a ->
+  Service Identity a (Shape b) c ->
   Shape Solved ->
   Notation Id ->
   Either String (Notation Field)
-notation m = go
+notation svc = go
   where
     go :: Shape Solved -> Notation Id -> Either String (Notation Field)
     go s = \case
@@ -457,10 +456,10 @@ notation m = go
 
     field' :: Id -> Shape Solved -> Either String Field
     field' n = \case
-      a :< Struct st ->
+      a :< Struct _ st ->
         note (missingErr n (identifier a) (Map.keys (st ^. members)))
           . List.find ((n ==) . _fieldId)
-          $ mkFields m a st
+          $ mkFields svc a st
       _ -> Left (descendErr n)
 
     shape :: Key Field -> Shape Solved
@@ -472,8 +471,8 @@ notation m = go
 
     skip :: Shape a -> Shape a
     skip = \case
-      _ :< List x -> x ^. listItem . refAnn
-      _ :< Map x -> x ^. mapValue . refAnn
+      _ :< List _ x -> x ^. listItem . refAnn
+      _ :< Map _ x -> x ^. mapValue . refAnn
       x -> x
 
     missingErr a b xs =
