@@ -15,8 +15,7 @@
     };
 
     botocore = {
-      # Lock botocore until we https://github.com/issue/888 is fixed
-      url = "github:boto/botocore/f14ab129706a99198d42eed78d75350ea61c48e9";
+      url = "github:boto/botocore";
       flake = false;
     };
   };
