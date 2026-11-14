@@ -735,6 +735,8 @@
 
 ### Fixed
 
+- `amazonka-core`: Fix missing brace in `instance Show HashedBody`.
+[\#???](https://github.com/brendanhay/amazonka/pull/???)
 - `amazonka-core`: `Amazonka.Data.Body.isStreaming` now considers `Chunked` bodies to be streaming. The main effect of this is that failed uploads of streaming bodies will not be spuriously retried with a partially consumed stream.
 [\#???](https://github.com/brendanhay/amazonka/pull/???)
 - `amazonka-sts`: `credentials` are now a required field in an `AssumeRoleWithSAMLResponse`.

@@ -258,11 +258,14 @@ instance Show HashedBody where
     where
       str c h n =
         BS8.unpack . toBS $
-          c
-            <> " { sha256 = "
-            <> build (Bytes.encodeBase16 h)
-            <> ", length = "
-            <> build n
+          mconcat
+            [ c,
+              " { sha256 = ",
+              build (Bytes.encodeBase16 h),
+              ", length = ",
+              build n,
+              " }"
+            ]
 
 instance IsString HashedBody where
   fromString = toHashed
