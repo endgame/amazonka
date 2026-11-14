@@ -735,6 +735,8 @@
 
 ### Fixed
 
+- `amazonka-core`: `Amazonka.Data.Body.isStreaming` now considers `Chunked` bodies to be streaming. The main effect of this is that failed uploads of streaming bodies will not be spuriously retried with a partially consumed stream.
+[\#???](https://github.com/brendanhay/amazonka/pull/???)
 - `amazonka-sts`: `credentials` are now a required field in an `AssumeRoleWithSAMLResponse`.
 [\#1069](https://github.com/brendanhay/amazonka/pull/1069)
 - `amazonka`: `Amazonka.Auth.SSO.relativeCachedTokenFile` is now pure

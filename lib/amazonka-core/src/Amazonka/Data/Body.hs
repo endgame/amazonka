@@ -352,8 +352,10 @@ md5Base64 = \case
 
 isStreaming :: RequestBody -> Bool
 isStreaming = \case
-  Hashed (HashedStream {}) -> True
-  _ -> False
+  Chunked {} -> True
+  Hashed HashedStream {} -> True
+  Hashed HashedBytes {} -> False
+  UnsignedPayload -> False
 
 toRequestBody :: RequestBody -> Client.RequestBody
 toRequestBody = \case
