@@ -38,7 +38,7 @@ import Data.Aeson.KeyMap (KeyMap)
 #endif
 
 -- | Convenience function for obtaining the size of a file.
-getFileSize :: MonadIO m => FilePath -> m Integer
+getFileSize :: (MonadIO m) => FilePath -> m Integer
 getFileSize path = liftIO (IO.withBinaryFile path IO.ReadMode IO.hFileSize)
 
 -- | A streaming, exception safe response body.
@@ -62,7 +62,7 @@ fuseStream ::
 fuseStream b@ResponseBody {body} f = b {body = body .| f}
 
 -- | Connect a 'Sink' to a response stream.
-sinkBody :: MonadIO m => ResponseBody -> ConduitM ByteString Void (ResourceT IO) a -> m a
+sinkBody :: (MonadIO m) => ResponseBody -> ConduitM ByteString Void (ResourceT IO) a -> m a
 sinkBody (ResponseBody body) sink =
   liftIO $ Conduit.runConduitRes $ body .| sink
 
@@ -148,7 +148,7 @@ remainderBytes ChunkedBody {length, size} =
 -- specified 'ChunkSize'.
 --
 -- /See:/ 'ToBody'.
-chunkedFile :: MonadIO m => ChunkSize -> FilePath -> m RequestBody
+chunkedFile :: (MonadIO m) => ChunkSize -> FilePath -> m RequestBody
 chunkedFile chunk path = do
   size <- getFileSize path
   if size > toInteger chunk
@@ -161,7 +161,7 @@ chunkedFile chunk path = do
 --
 -- /See:/ 'chunkedFile'.
 chunkedFileRange ::
-  MonadIO m =>
+  (MonadIO m) =>
   -- | The idealized size of chunks that will be yielded downstream.
   ChunkSize ->
   -- | The file path to read.
@@ -200,7 +200,7 @@ unsafeChunkedBody ::
 unsafeChunkedBody chunk size = Chunked . ChunkedBody chunk size
 
 sourceFileChunks ::
-  MonadResource m =>
+  (MonadResource m) =>
   ChunkSize ->
   FilePath ->
   ConduitM () ByteString m ()
@@ -215,7 +215,7 @@ sourceFileChunks (ChunkSize chunk) path =
         go hd
 
 sourceFileRangeChunks ::
-  MonadResource m =>
+  (MonadResource m) =>
   -- | The idealized size of chunks that will be yielded downstream.
   ChunkSize ->
   -- | The file path to read.
@@ -282,7 +282,7 @@ sha256Base16 =
 --
 -- /See:/ 'ToHashedBody'.
 hashedFile ::
-  MonadIO m =>
+  (MonadIO m) =>
   -- | The file path to read.
   FilePath ->
   m HashedBody
@@ -299,7 +299,7 @@ hashedFile path =
 --
 -- /See:/ 'hashedFile', 'Conduit.sourceFileRange'.
 hashedFileRange ::
-  MonadIO m =>
+  (MonadIO m) =>
   -- | The file path to read.
   FilePath ->
   -- | The byte offset at which to start reading.
@@ -336,6 +336,10 @@ data RequestBody
   = -- | Currently S3 only, see 'ChunkedBody' for details.
     Chunked ChunkedBody
   | Hashed HashedBody
+  | -- | Serialises to an empty body if used in a request, but signs
+    -- as @UNSIGNED-PAYLOAD@ for actions which support that
+    -- (e.g. @s3:PutObject@).
+    UnsignedPayload
   deriving stock (Show)
 
 instance IsString RequestBody where
@@ -357,6 +361,7 @@ toRequestBody = \case
   Hashed x -> case x of
     HashedStream _ n f -> Client.Conduit.requestBodySource (fromIntegral n) f
     HashedBytes _ b -> Client.RequestBodyBS b
+  UnsignedPayload -> Client.RequestBodyBS BS.empty
 
 contentLength :: RequestBody -> Integer
 contentLength = \case
@@ -364,6 +369,7 @@ contentLength = \case
   Hashed x -> case x of
     HashedStream _ n _ -> n
     HashedBytes _ b -> fromIntegral (BS.length b)
+  UnsignedPayload -> 0
 
 -- | Anything that can be safely converted to a 'HashedBody'.
 class ToHashedBody a where
@@ -409,7 +415,7 @@ instance ToHashedBody (HashMap Text Aeson.Value) where
 class ToBody a where
   -- | Convert a value to a request body.
   toBody :: a -> RequestBody
-  default toBody :: ToHashedBody a => a -> RequestBody
+  default toBody :: (ToHashedBody a) => a -> RequestBody
   toBody = Hashed . toHashed
 
 instance ToBody RequestBody where
@@ -421,7 +427,7 @@ instance ToBody HashedBody where
 instance ToBody ChunkedBody where
   toBody = Chunked
 
-instance ToHashedBody a => ToBody (Maybe a) where
+instance (ToHashedBody a) => ToBody (Maybe a) where
   toBody = Hashed . maybe (toHashed BS.empty) toHashed
 
 instance ToBody String

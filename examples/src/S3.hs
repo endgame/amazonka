@@ -25,18 +25,34 @@ import qualified Data.Text.IO as Text
 import Data.Time
 import System.IO
 
-getPresignedURL ::
-  -- | Region to operate in.
+-- | Generate a presigned @s3:GetObject@ request to read a specific
+-- object from a bucket. This is often used to provide time-limited
+-- download links to restricted content.
+presignedGet ::
   Region ->
   BucketName ->
-  -- | The source object key.
   ObjectKey ->
   IO ByteString
-getPresignedURL reg b k = do
+presignedGet reg b k = do
   lgr <- newLogger Trace stdout
   env <- newEnv discover <&> set #logger lgr . set #region reg
   ts <- getCurrentTime
   runResourceT $ presignURL env ts 60 (newGetObject b k)
+
+-- | Generate a presigned @s3:PutObject@ request for an unsigned
+-- payload. This is often used to grant an external unauthenticated
+-- program the ability to upload one file via @POST@, to a bucket that
+-- you control.
+presignedPost ::
+  Region ->
+  BucketName ->
+  ObjectKey ->
+  IO ByteString
+presignedPost reg b k = do
+  lgr <- newLogger Trace stdout
+  env <- newEnv discover <&> set #logger lgr . set #region reg
+  ts <- getCurrentTime
+  runResourceT $ presignURL env ts 60 (newPutObject b k UnsignedPayload)
 
 listAll ::
   -- | Region to operate in.
@@ -164,5 +180,5 @@ getObjectAttributes reg b k = do
                ]
   runResourceT $ send env req
 
-say :: MonadIO m => Text -> m ()
+say :: (MonadIO m) => Text -> m ()
 say = liftIO . Text.putStrLn

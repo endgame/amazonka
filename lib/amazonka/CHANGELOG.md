@@ -4,6 +4,10 @@
 
 ### Changed
 
+- `amazonka-core`: The `Data.Body.RequestPayload` constructor has a new `UnsignedPayload` constructor, to make it more obvious how to pre-sign requests where the caller is expected to upload a file whose hash is not known at signing time.
+  [\#???](https://github.com/brendanhay/amazonka/pull/???)
+  - Requests that upload a `ChunkedBody` still sign their request using `UNSIGNED-PAYLOAD` to prevent sending the stream twice.
+  - Requests to S3 that contain an empty `HashedBody` still sign their request using `UNSIGNED-PAYLOAD` for backwards compatibility. This is not expected to change.
 - `amazonka` will now store idempotency tokens into requests that support them but have not been set by the caller, generating a UUID v4 like `botocore`.
   - `amazonka-core`: Class `AWSRequest` has a new method `idempotencyTokenLens :: Maybe (ALens' req (Maybe Text))`. If a request type contains an idempotency token, this is `Just` a lens onto it, otherwise the class's default will leave it as `Nothing`.
   [\#1055](https://github.com/brendanhay/amazonka/pull/1055)

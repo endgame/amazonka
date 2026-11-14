@@ -58,6 +58,7 @@ presign ex rq@Request {body, service} a region ts =
         Hashed (HashedBytes h b)
           | BS.null b && signingName service == "s3" -> unsignedPayload
           | otherwise -> Base.Tag $ encodeBase16 h
+        UnsignedPayload -> unsignedPayload
 
     unsignedPayload = Base.Tag "UNSIGNED-PAYLOAD"
 
@@ -77,6 +78,7 @@ sign rq@Request {body} a r ts =
   case body of
     Chunked x -> Chunked.chunked x rq a r ts
     Hashed x -> hashed x rq a r ts
+    UnsignedPayload -> hashed (toHashed BS.empty) rq a r ts
 
 hashed :: HashedBody -> Algorithm a
 hashed x rq a r ts =
